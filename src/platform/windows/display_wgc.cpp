@@ -122,13 +122,31 @@ namespace platf::dxgi {
       return -1;
     }
 
+    // Everything from here to CreateForMonitor() can throw. `com_ptr::as()` throws on a
+    // failed QueryInterface, and `get_activation_factory()` throws when the runtime class
+    // cannot be activated -- which happens, for example, when Sunshine runs as SYSTEM in a
+    // user session, as it does when started by its own service. Without a handler the
+    // exception escapes init(), reaches std::terminate() and kills the process with
+    // STATUS_STACK_BUFFER_OVERRUN (0xc0000409) reported against ucrtbase.dll, giving the
+    // user a crash loop and no diagnostic. Every other step in this function is already
+    // guarded; this was the one gap.
     DXGI_OUTPUT_DESC output_desc;
-    uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
-    display->output->GetDesc(&output_desc);
+    try {
+      uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
+      display->output->GetDesc(&output_desc);
 
-    auto monitor_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
-    if (monitor_factory == nullptr || FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
-      BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';
+      auto monitor_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+      if (monitor_factory == nullptr) {
+        // Reported separately because `status` is not set on this path.
+        BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: the GraphicsCaptureItem activation factory is unavailable"sv;
+        return -1;
+      }
+      if (FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
+        BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';
+        return -1;
+      }
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire the capture item: [0x"sv << util::hex(e.code()).to_string_view() << ']';
       return -1;
     }
 
