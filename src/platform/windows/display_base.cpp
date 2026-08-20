@@ -429,6 +429,37 @@ namespace platf::dxgi {
   }
 
   /**
+   * @brief Tests whether the configured capture backend can capture the given output.
+   * @details Desktop Duplication cannot capture an output owned by a paravirtualized
+   *          display adapter (GPU-P / GPU-PV). `IDXGIOutput1::DuplicateOutput()` fails
+   *          there with `E_INVALIDARG` no matter which adapter or device is used, because
+   *          the guest-side driver does not implement the duplication path at all.
+   *
+   *          Windows.Graphics.Capture does not go through the display driver; it is
+   *          serviced by DWM, and it captures those outputs successfully. Sunshine
+   *          already ships a complete WGC backend, but every output is gated behind the
+   *          Desktop Duplication probe before that backend is ever reached, so on such a
+   *          host Sunshine reports no capturable displays.
+   *
+   *          When the user has explicitly selected `capture = wgc`, the Desktop
+   *          Duplication probe is not a meaningful capability test, so skip it. Automatic
+   *          backend selection is unchanged: it still probes Desktop Duplication first.
+   *
+   * @param adapter The DXGI adapter to use for capture.
+   * @param output The DXGI output to capture.
+   * @param enumeration_only Specifies whether this test is occurring for display enumeration.
+   *
+   * @return True when the configured capture backend can capture the requested output.
+   */
+  bool test_capture_supported(adapter_t &adapter, output_t &output, bool enumeration_only) {
+    if (config::video.capture == "wgc") {
+      return true;
+    }
+
+    return test_dxgi_duplication(adapter, output, enumeration_only);
+  }
+
+  /**
    * @brief Hook for NtGdiDdDDIGetCachedHybridQueryValue() from win32u.dll.
    * @param gpuPreference A pointer to the location where the preference will be written.
    * @return Always STATUS_SUCCESS if valid arguments are provided.
@@ -511,7 +542,7 @@ namespace platf::dxgi {
             continue;
           }
 
-          if (desc.AttachedToDesktop && test_dxgi_duplication(adapter_tmp, output_tmp, false)) {
+          if (desc.AttachedToDesktop && test_capture_supported(adapter_tmp, output_tmp, false)) {
             output = std::move(output_tmp);
 
             offset_x = desc.DesktopCoordinates.left;
@@ -1108,7 +1139,7 @@ namespace platf {
           << std::endl;
 
         // Don't include the display in the list if we can't actually capture it
-        if (desc.AttachedToDesktop && dxgi::test_dxgi_duplication(adapter, output, true)) {
+        if (desc.AttachedToDesktop && dxgi::test_capture_supported(adapter, output, true)) {
           display_names.emplace_back(std::move(device_name));
         }
       }

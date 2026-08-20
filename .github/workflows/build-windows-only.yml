@@ -1,0 +1,36 @@
+---
+# Builds ONLY the Windows installer, on demand.
+#
+# The upstream CI workflow builds Docker, Flatpak, FreeBSD, macOS, Linux and
+# Windows in one run. On a personal fork most of those jobs fail for lack of
+# repository secrets, and the whole run takes hours. This workflow reuses the
+# upstream Windows job and nothing else.
+#
+# Run it from the Actions tab: "Build Windows only" -> "Run workflow".
+name: Build Windows only
+permissions: {}
+
+on:
+  workflow_dispatch:
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - name: Generate a date based version
+        id: v
+        run: echo "version=$(date -u +'%Y.%-m%d.%H%M%S')" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    name: Windows
+    needs: version
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci-windows.yml
+    with:
+      publish_release: 'false'
+      release_commit: ${{ github.sha }}
+      release_version: ${{ needs.version.outputs.version }}
