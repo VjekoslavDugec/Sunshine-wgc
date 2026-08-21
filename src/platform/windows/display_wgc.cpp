@@ -104,21 +104,49 @@ namespace platf::dxgi {
     HRESULT status;
     dxgi::dxgi_t dxgi;
     winrt::com_ptr<::IInspectable> d3d_comhandle;
+
+    // Step logging. When Sunshine is started by its own service it runs as SYSTEM in the
+    // user session, and something in this function kills the process with 0xc0000409
+    // (abort) without producing a single log line -- no winrt::hresult_error is thrown,
+    // so a catch on that type alone never fires. The sink runs with auto_flush(true), so
+    // these lines pin down the exact call that dies.
+    BOOST_LOG(info) << "wgc: init start"sv;
+
+    // C++/WinRT expects an initialised apartment. Sunshine never calls init_apartment()
+    // or RoInitialize() on this thread; it happens to work for an interactive user
+    // because cppwinrt falls back to CoIncrementMTAUsage(). Do it explicitly -- harmless
+    // when already initialised, and a candidate fix for the SYSTEM case.
     try {
+      winrt::init_apartment(winrt::apartment_type::multi_threaded);
+      BOOST_LOG(info) << "wgc: apartment initialised"sv;
+    } catch (winrt::hresult_error &e) {
+      BOOST_LOG(info) << "wgc: init_apartment returned [0x"sv << util::hex(e.code()).to_string_view() << "] (usually harmless)"sv;
+    }
+
+    try {
+      BOOST_LOG(info) << "wgc: step 1 GraphicsCaptureSession::IsSupported()"sv;
       if (!winrt::GraphicsCaptureSession::IsSupported()) {
         BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows!"sv;
         return -1;
       }
+      BOOST_LOG(info) << "wgc: step 2 QueryInterface(IID_IDXGIDevice)"sv;
       if (FAILED(status = display->device->QueryInterface(IID_IDXGIDevice, (void **) &dxgi))) {
         BOOST_LOG(error) << "Failed to query DXGI interface from device [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
+      BOOST_LOG(info) << "wgc: step 3 CreateDirect3D11DeviceFromDXGIDevice()"sv;
       if (FAILED(status = winrt::CreateDirect3D11DeviceFromDXGIDevice(*&dxgi, d3d_comhandle.put()))) {
         BOOST_LOG(error) << "Failed to query WinRT DirectX interface from device [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
     } catch (winrt::hresult_error &e) {
       BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire device: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "wgc: std::exception while acquiring device: "sv << e.what();
+      return -1;
+    } catch (...) {
+      BOOST_LOG(error) << "wgc: unknown exception while acquiring device"sv;
       return -1;
     }
 
@@ -132,21 +160,30 @@ namespace platf::dxgi {
     // guarded; this was the one gap.
     DXGI_OUTPUT_DESC output_desc;
     try {
+      BOOST_LOG(info) << "wgc: step 4 as<IDirect3DDevice>()"sv;
       uwp_device = d3d_comhandle.as<winrt::IDirect3DDevice>();
       display->output->GetDesc(&output_desc);
 
+      BOOST_LOG(info) << "wgc: step 5 get_activation_factory<GraphicsCaptureItem>()"sv;
       auto monitor_factory = winrt::get_activation_factory<winrt::GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
       if (monitor_factory == nullptr) {
         // Reported separately because `status` is not set on this path.
         BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: the GraphicsCaptureItem activation factory is unavailable"sv;
         return -1;
       }
+      BOOST_LOG(info) << "wgc: step 6 CreateForMonitor()"sv;
       if (FAILED(status = monitor_factory->CreateForMonitor(output_desc.Monitor, winrt::guid_of<winrt::IGraphicsCaptureItem>(), winrt::put_abi(item)))) {
         BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire display: [0x"sv << util::hex(status).to_string_view() << ']';
         return -1;
       }
     } catch (winrt::hresult_error &e) {
       BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to acquire the capture item: [0x"sv << util::hex(e.code()).to_string_view() << ']';
+      return -1;
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "wgc: std::exception while acquiring capture item: "sv << e.what();
+      return -1;
+    } catch (...) {
+      BOOST_LOG(error) << "wgc: unknown exception while acquiring capture item"sv;
       return -1;
     }
 
@@ -157,8 +194,11 @@ namespace platf::dxgi {
     }
 
     try {
+      BOOST_LOG(info) << "wgc: step 7 CreateFreeThreaded()"sv;
       frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
+      BOOST_LOG(info) << "wgc: step 8 CreateCaptureSession()"sv;
       capture_session = frame_pool.CreateCaptureSession(item);
+      BOOST_LOG(info) << "wgc: step 9 FrameArrived handler"sv;
       frame_pool.FrameArrived({this, &wgc_capture_t::on_frame_arrived});
     } catch (winrt::hresult_error &e) {
       BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to create capture session: [0x"sv << util::hex(e.code()).to_string_view() << ']';
@@ -183,6 +223,7 @@ namespace platf::dxgi {
       BOOST_LOG(warning) << "Screen capture may be capped to 60fps on this device for this release of Windows: failed to set MinUpdateInterval: [0x"sv << util::hex(e.code()).to_string_view() << ']';
     }
     try {
+      BOOST_LOG(info) << "wgc: step 10 StartCapture()"sv;
       capture_session.StartCapture();
     } catch (winrt::hresult_error &e) {
       BOOST_LOG(error) << "Screen capture is not supported on this device for this release of Windows: failed to start capture: [0x"sv << util::hex(e.code()).to_string_view() << ']';
