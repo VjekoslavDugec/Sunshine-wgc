@@ -9,6 +9,7 @@
 #include "display.h"
 #include "misc.h"
 #include "src/logging.h"
+#include "src/config.h"
 
 // Gross hack to work around MINGW-packages#22160
 #define ____FIReference_1_boolean_INTERFACE_DEFINED__
@@ -194,8 +195,32 @@ namespace platf::dxgi {
     }
 
     try {
-      BOOST_LOG(info) << "wgc: step 7 CreateFreeThreaded()"sv;
-      frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
+      // Buffer count is configurable via `wgc_frame_pool_size`; upstream hardcodes 2.
+      //
+      // Measured on a Hyper-V GPU-P guest: single frames arrive with the top-most
+      // windows missing, revealing the layers underneath. DWM composes back to
+      // front, so that is a frame read before composition finished. It gets worse
+      // under load, never happens for full-screen apps (they bypass the compositor),
+      // and a second, unrelated capture of the same desktop at the same moment is
+      // clean - so the composed desktop itself is fine.
+      //
+      // More buffers put more distance between DWM writing and us reading. A value
+      // of 1 forces a strict handoff: DWM cannot produce until we release, so a
+      // frame is either whole or not delivered at all. That drops frames and is
+      // meant for diagnosis rather than daily use.
+      auto pool_size = ::config::video.wgc_frame_pool_size;  // :: zbog lokalne varijable `config`
+      if (pool_size < 1 || pool_size > 8) {
+        BOOST_LOG(warning) << "wgc_frame_pool_size "sv << pool_size << " is out of range (1-8), using 2"sv;
+        pool_size = 2;
+      }
+      BOOST_LOG(info) << "wgc: step 7 CreateFreeThreaded(), "sv << pool_size << " buffers"sv;
+      try {
+        frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), pool_size, item.Size());
+      } catch (winrt::hresult_error &e) {
+        // Do not let an unusual buffer count take capture down with it.
+        BOOST_LOG(warning) << "wgc: frame pool with "sv << pool_size << " buffers failed [0x"sv << util::hex(e.code()).to_string_view() << "], falling back to 2"sv;
+        frame_pool = winrt::Direct3D11CaptureFramePool::CreateFreeThreaded(uwp_device, static_cast<winrt::Windows::Graphics::DirectX::DirectXPixelFormat>(display->capture_format), 2, item.Size());
+      }
       BOOST_LOG(info) << "wgc: step 8 CreateCaptureSession()"sv;
       capture_session = frame_pool.CreateCaptureSession(item);
       BOOST_LOG(info) << "wgc: step 9 FrameArrived handler"sv;

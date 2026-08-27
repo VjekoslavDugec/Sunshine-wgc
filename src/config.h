@@ -123,6 +123,17 @@ namespace config {
     std::string output_name;  ///< Display output name selected in configuration.
 
     /**
+     * @brief Number of buffers in the Windows.Graphics.Capture frame pool.
+     *
+     * Upstream hardcodes 2. On a GPU-P guest the compositor is slow enough that
+     * a frame can be read while DWM is still drawing into it, which surfaces as
+     * top-most windows missing from a single frame. More buffers widen the gap
+     * between writer and reader; 1 forces a strict handoff (no torn frame, but
+     * frames are dropped instead) and is meant for diagnosis, not daily use.
+     */
+    int wgc_frame_pool_size;
+
+    /**
      * @brief Display-device integration settings.
      */
     struct dd_t {

@@ -775,6 +775,7 @@ namespace config {
     {},  // encoder
     {},  // adapter_name
     {},  // output_name
+    2,  // wgc_frame_pool_size (upstream hardcoded value)
 
     {
       video_t::dd_t::config_option_e::disabled,  // configuration_option
@@ -1655,6 +1656,7 @@ namespace config {
     string_f(vars, "encoder", video.encoder);
     string_f(vars, "adapter_name", video.adapter_name);
     string_f(vars, "output_name", video.output_name);
+    int_f(vars, "wgc_frame_pool_size", video.wgc_frame_pool_size);
 
     generic_f(vars, "dd_configuration_option", video.dd.configuration_option, dd::config_option_from_view);
     generic_f(vars, "dd_resolution_option", video.dd.resolution_option, dd::resolution_option_from_view);
