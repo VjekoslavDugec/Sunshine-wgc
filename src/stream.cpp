@@ -708,6 +708,36 @@ namespace stream {
     }
   }
 
+  // Publish the address of the client that is streaming right now, so a
+  // separate process on this machine can act on it - a shared clipboard, for
+  // instance.
+  //
+  // This is the only place the information exists in usable form. Moonlight
+  // sets a stream up over short-lived TCP connections and then carries it over
+  // UDP, and Windows does not expose the peer of a UDP socket. Anything outside
+  // Sunshine can only catch the brief handshake, and misses it whenever it
+  // starts while a stream is already running.
+  //
+  // Best effort throughout: a failure here must never disturb streaming.
+  namespace {
+    std::filesystem::path stream_peer_file() {
+      return platf::appdata() / "stream_peer.txt";
+    }
+
+    void write_stream_peer(const std::string &address) {
+      try {
+        std::ofstream out(stream_peer_file(), std::ios::trunc);
+        out << address;
+      } catch (...) {}
+    }
+
+    void clear_stream_peer() {
+      try {
+        std::filesystem::remove(stream_peer_file());  // baca, hvata se nize
+      } catch (...) {}
+    }
+  }  // namespace
+
   void control_server_t::iterate(std::chrono::milliseconds timeout) {
     ENetEvent event;
     auto res = enet_host_service(_host.get(), &event, (enet_uint32) timeout.count());
@@ -736,9 +766,11 @@ namespace stream {
           break;
         case ENET_EVENT_TYPE_CONNECT:
           BOOST_LOG(info) << "CLIENT CONNECTED"sv;
+          write_stream_peer(platf::from_sockaddr((sockaddr *) &event.peer->address.address));
           break;
         case ENET_EVENT_TYPE_DISCONNECT:
           BOOST_LOG(info) << "CLIENT DISCONNECTED"sv;
+          clear_stream_peer();
           // No more clients to send video data to ^_^
           if (session->state == session::state_e::RUNNING) {
             session::stop(*session);
