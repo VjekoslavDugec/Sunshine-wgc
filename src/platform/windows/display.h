@@ -85,6 +85,10 @@ namespace platf::dxgi {
    */
   using dup_t = util::safe_ptr<IDXGIOutputDuplication, Release<IDXGIOutputDuplication>>;
   /**
+   * @brief Owning COM pointer for a D3D11 query.
+   */
+  using query_t = util::safe_ptr<ID3D11Query, Release<ID3D11Query>>;
+  /**
    * @brief Owning COM pointer for a D3D11 2D texture.
    */
   using texture2d_t = util::safe_ptr<ID3D11Texture2D, Release<ID3D11Texture2D>>;
@@ -793,6 +797,7 @@ namespace platf::dxgi {
    */
   class display_wgc_vram_t: public display_vram_t {
     wgc_capture_t dup;
+    query_t copy_done;  ///< Event query used to wait for the capture copy to finish on the GPU.
 
   public:
     /**

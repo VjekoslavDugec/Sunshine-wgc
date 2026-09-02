@@ -1881,6 +1881,37 @@ namespace platf::dxgi {
       texture_lock_helper lock_helper(d3d_img->capture_mutex.get());
       if (lock_helper.lock()) {
         device_ctx->CopyResource(d3d_img->capture_texture.get(), src.get());
+
+        // Wait until the GPU has actually finished this copy.
+        //
+        // CopyResource only queues the work. The WGC frame goes back to the frame
+        // pool right after this (release_snapshot -> frame.Close()), which lets DWM
+        // compose the next image straight into the same surface. DWM writes through
+        // its own device and we read through ours, and D3D11 gives no ordering
+        // guarantee between the two - so under load the copy can read a surface that
+        // is already being overwritten.
+        //
+        // DWM composes back to front, so what lands in the captured frame is the
+        // bottom of the new image and nothing above it: in the stream the foreground
+        // window turns black and the taskbar disappears for a single frame.
+        //
+        // Frame pool size does not help - a pool hands back the surface freed last,
+        // which is exactly the one we just released. Measured on GPU-P, an RTX 4090
+        // split across 15 guests, 2026-09-02.
+        if (!copy_done) {
+          D3D11_QUERY_DESC qd {};
+          qd.Query = D3D11_QUERY_EVENT;
+          if (FAILED(device->CreateQuery(&qd, &copy_done))) {
+            BOOST_LOG(warning) << "Failed to create capture copy fence - frames may tear under load"sv;
+          }
+        }
+        if (copy_done) {
+          device_ctx->End(copy_done.get());
+          BOOL finished = FALSE;
+          while (device_ctx->GetData(copy_done.get(), &finished, sizeof(finished), 0) != S_OK) {
+            YieldProcessor();
+          }
+        }
       } else {
         BOOST_LOG(error) << "Failed to lock capture texture";
         return capture_e::error;
