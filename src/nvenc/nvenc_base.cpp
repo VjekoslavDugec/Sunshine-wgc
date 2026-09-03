@@ -8,9 +8,12 @@
 // standard includes
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <fstream>
+#include <mutex>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -788,6 +791,52 @@ namespace NVENC_NAMESPACE {
     }
 
     encoder_state.frame_size_logger.collect_and_log(encoded_frame.data.size() / 1000.);
+
+    // Per-frame record, for counting capture artefacts after the fact.
+    //
+    // A frame that loses a large region of content encodes very differently
+    // from its neighbours - once when the content drops out and once when it
+    // returns. The aggregate logger above keeps only min/max/avg over 20 s,
+    // which hides exactly that; its max mostly just reports the bitrate cap.
+    //
+    // Recording the screen to look for these costs enough GPU time to provoke
+    // the very artefact it is meant to measure, and it needs someone watching.
+    // These numbers already exist for every frame, so writing them down costs
+    // nothing and works unattended on any number of hosts at once - which is
+    // what it takes to tell whether the artefact fires on several guests in
+    // the same second, i.e. whether it comes from the shared GPU.
+    //
+    // Written only while debug logging is on.
+    if (config::sunshine.min_log_level <= 1) {
+      static std::mutex frames_mutex;
+      static std::ofstream frames_file;
+      static bool frames_opened = false;
+      static uint64_t frames_written = 0;
+
+      std::lock_guard<std::mutex> lock(frames_mutex);
+      if (!frames_opened) {
+        frames_opened = true;
+        if (!config::sunshine.log_file.empty()) {
+          frames_file.open(config::sunshine.log_file + ".frames.csv", std::ios::app);
+          if (frames_file) {
+            frames_file << "us;index;bytes;idr;after_rfi\n";
+          }
+        }
+      }
+      if (frames_file) {
+        const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
+                          std::chrono::system_clock::now().time_since_epoch()
+                        ).count();
+        frames_file << us << ';'
+                    << encoded_frame.frame_index << ';'
+                    << encoded_frame.data.size() << ';'
+                    << (encoded_frame.idr ? 1 : 0) << ';'
+                    << (encoded_frame.after_ref_frame_invalidation ? 1 : 0) << '\n';
+        if (++frames_written % 60 == 0) {
+          frames_file.flush();
+        }
+      }
+    }
 
     return encoded_frame;
   }
